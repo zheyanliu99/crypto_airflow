@@ -1,0 +1,5 @@
+{
+    "variables_config":{
+        "email_list":["yan.test@gmail.com", "zheyan.test@gmail.com", "zheyan.test@yahoo.com"]
+    }
+}
