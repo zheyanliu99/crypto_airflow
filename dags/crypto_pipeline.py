@@ -1,3 +1,4 @@
+from jsonschema import ValidationError
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.email import EmailOperator
@@ -9,6 +10,7 @@ import pandas as pd
 
 dsn = "postgresql://zl3119:1947@w4111.cisxo09blonu.us-east-1.rds.amazonaws.com/proj1part2"
 conn = psycopg2.connect(dsn)
+cur = conn.cursor()
 
 
 import datetime
@@ -50,6 +52,7 @@ def execute_values(conn, df, table):
 try:
     dag_config = Variable.get('variables_config', deserialize_json=True)
     email_list = dag_config['email_list']
+    print(email_list)
 except:
     email_list = ['yan.test@gmail.com', 'zheyan.test@gmail.com', 'zheyan.test@yahoo.com']
     raise Warning("You didn't set up variables_fig, using default email_list ['yan.test@gmail.com', 'zheyan.test@gmail.com', 'zheyan.test@yahoo.com']")
@@ -64,6 +67,7 @@ default_args = {
 }
 
 def get_crypto():
+    print(email_list)
     # date = '2022-04-28'
     url = 'https://api.polygon.io/v2/aggs/grouped/locale/global/market/crypto/{}?adjusted=true&apiKey=2gEOah0DjDSI9ImMCR_0BL5TSJkvlC4z'.format(date)
     r = requests.get(url)
@@ -104,7 +108,11 @@ def get_crypto():
     cr_df['date'] = date
 
     # Insert values to df
-    execute_values(conn, cr_df, 'crytpo_daily')
+    try:
+        execute_values(conn, cr_df, 'crytpo_daily')
+    except:
+        print('Primary key exists')
+    cr_df.to_csv(f'/opt/airflow/dags/files/crypto_{date}.csv', index = False)
         
 
 def check_email(**context):
@@ -122,14 +130,9 @@ def check_email(**context):
 
 
 def update_sent_emails(**context):
-    with open(r'/opt/airflow/dags/files/email_sent.csv', 'a') as file:
-        writer = csv.writer(file)
-        year, week = context['ti'].xcom_pull(task_ids='downloading_books')
-        for email in context['ti'].xcom_pull(task_ids='check_emails').split(','):
-            if email:
-                newrow = [email, year, week]
-                writer.writerow(newrow)
-
+    for email in context['ti'].xcom_pull(task_ids='check_emails').split(','):
+        cur.execute("INSERT INTO email_sent values(%s, %s)", (date, email))
+    conn.commit()
 
 with DAG("crpto_pipline", start_date=datetime.datetime(2021, 1 ,1), 
     schedule_interval="@daily", default_args=default_args, catchup=False) as dag:
@@ -145,17 +148,17 @@ with DAG("crpto_pipline", start_date=datetime.datetime(2021, 1 ,1),
         python_callable=check_email
     )
 
-    # send_emails = EmailOperator(
-    #     task_id='send_emails',
-    #     to="{{ task_instance.xcom_pull(task_ids='check_emails') }}",
-    #     subject="New York Times Weekly Bestseller Books",
-    #     files = ['/opt/airflow/dags/files/combined-print-and-e-book-nonfiction.csv', '/opt/airflow/dags/files/combined-print-and-e-book-fiction.csv'],
-    #     html_content="<h3>Check out attachments for the bestseller books this week!</h3>"
-    # )
+    send_emails = EmailOperator(
+        task_id='send_emails',
+        to="{{ task_instance.xcom_pull(task_ids='check_emails') }}",
+        subject="Crypto price for Yesterday",
+        files = [f'/opt/airflow/dags/files/crypto_{date}.csv'],
+        html_content="<h3>Check out Crypto price!</h3>"
+    )
 
-    # update_sent_emails = PythonOperator(
-    #     task_id="update_sent_emails",
-    #     python_callable=update_sent_emails
-    # )
+    update_sent_emails = PythonOperator(
+        task_id="update_sent_emails",
+        python_callable=update_sent_emails
+    )
     
-    get_crypto > check_emails
+    get_crypto >> check_emails >> send_emails >> update_sent_emails
